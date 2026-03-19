@@ -3,6 +3,9 @@ substitutions:
   _AR_REPO: myp-release
   _SERVICE: top-app
 
+options:
+  logging: CLOUD_LOGGING_ONLY
+
 steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
