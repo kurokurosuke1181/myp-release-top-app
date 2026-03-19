@@ -1,0 +1,26 @@
+substitutions:
+  _REGION: asia-northeast1
+  _SERVICE: top-app
+  _PREVIEW_TAG: preview
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'bash'
+    args:
+      - '-ceu'
+      - |
+        existing_tags="$(gcloud run services describe "${_SERVICE}" --region="${_REGION}" --platform=managed --format='value(status.traffic.tag)')"
+        if printf '%s\n' "${existing_tags}" | grep -qx "${_PREVIEW_TAG}"; then
+          gcloud run services update-traffic "${_SERVICE}" \
+            --region="${_REGION}" \
+            --platform=managed \
+            --remove-tags="${_PREVIEW_TAG}"
+        fi
+
+        gcloud run services update-traffic "${_SERVICE}" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --to-latest
