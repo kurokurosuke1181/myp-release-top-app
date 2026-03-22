@@ -3,8 +3,6 @@ substitutions:
   _AR_REPO_SERVICE: myp-release-top-app
   _AR_REPO_COMMON: myp-release-common-base
   _SERVICE: top-app
-  _RUNTIME_BASE_IMAGE: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_COMMON}/base-runtime-jre21:latest'
-  _BUILD_BASE_IMAGE: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_COMMON}/base-build-maven21:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -13,8 +11,8 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
-      - '--build-arg=RUNTIME_BASE_IMAGE=${_RUNTIME_BASE_IMAGE}'
-      - '--build-arg=BUILD_BASE_IMAGE=${_BUILD_BASE_IMAGE}'
+      - '--build-arg=RUNTIME_BASE_IMAGE=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_COMMON}/base-runtime-jre21:latest'
+      - '--build-arg=BUILD_BASE_IMAGE=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_COMMON}/base-build-maven21:latest'
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_SERVICE}/${_SERVICE}:$BUILD_ID'
       - '.'
