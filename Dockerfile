@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 
-FROM maven:3.9-eclipse-temurin-17 AS build
+ARG BUILD_BASE_IMAGE
+ARG RUNTIME_BASE_IMAGE
+
+FROM ${BUILD_BASE_IMAGE} AS build
 WORKDIR /workspace
 COPY pom.xml .
 RUN mvn -q -DskipTests dependency:go-offline
@@ -8,7 +11,7 @@ RUN mvn -q -DskipTests dependency:go-offline
 COPY src ./src
 RUN mvn -q -DskipTests package
 
-FROM eclipse-temurin:17-jre
+FROM ${RUNTIME_BASE_IMAGE}
 WORKDIR /app
 COPY --from=build /workspace/target/*.jar /app/app.jar
 EXPOSE 8080
