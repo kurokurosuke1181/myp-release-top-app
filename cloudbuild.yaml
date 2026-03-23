@@ -1,38 +1,137 @@
+# Dockerfile版アプリのプレビュー用ビルドです。
+# イメージ作成から脆弱性確認、attestation、Cloud Runデプロイまでをまとめて実行します。
+
 substitutions:
   _REGION: asia-northeast1
   _AR_REPO_SERVICE: myp-release-top-app
   _AR_REPO_COMMON: myp-release-common-base
   _SERVICE: top-app
 
+  _KMS_LOCATION: global
+  _KMS_KEYRING: myp-release
+  _KMS_KEY: myp-release-cosign
+  _KMS_KEY_VERSION: '1'
+
 options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
-  - name: 'gcr.io/cloud-builders/docker'
+  # Dockerイメージをビルドします。
+  - name: gcr.io/cloud-builders/docker
     args:
-      - 'build'
+      - build
       - '--build-arg=RUNTIME_BASE_IMAGE=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_COMMON}/base-runtime-jre21:latest'
       - '--build-arg=BUILD_BASE_IMAGE=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_COMMON}/base-build-maven21:latest'
-      - '-t'
+      - -t
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_SERVICE}/${_SERVICE}:$BUILD_ID'
-      - '.'
+      - .
 
-  - name: 'gcr.io/cloud-builders/docker'
+  # Artifact Registryへpushします。
+  - name: gcr.io/cloud-builders/docker
     args:
-      - 'push'
+      - push
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_SERVICE}/${_SERVICE}:$BUILD_ID'
 
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
-    entrypoint: 'gcloud'
+  # 脆弱性スキャンの完了を待ち、Critical/Highがあれば停止します。
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
     args:
-      - 'run'
-      - 'deploy'
-      - '${_SERVICE}'
-      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_SERVICE}/${_SERVICE}:$BUILD_ID'
-      - '--region=${_REGION}'
-      - '--platform=managed'
-      - '--ingress=internal-and-cloud-load-balancing'
-      - '--allow-unauthenticated'
+      - '-ceu'
+      - |
+        apt-get update
+        apt-get install -y python3
+
+        IMAGE_TAG="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_SERVICE}/${_SERVICE}:$BUILD_ID"
+        DIGEST="$(gcloud artifacts docker images describe "$${IMAGE_TAG}" --format='value(image_summary.digest)')"
+        [ -n "$${DIGEST}" ] || { echo "Failed to resolve digest for: $${IMAGE_TAG}"; exit 1; }
+
+        IMAGE_DIGEST="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_SERVICE}/${_SERVICE}@$${DIGEST}"
+        echo "$${IMAGE_DIGEST}" > /workspace/image_digest.txt
+        echo "Image digest: $${IMAGE_DIGEST}"
+
+        ready=0
+        critical=0
+        high=0
+        for i in $(seq 1 30); do
+          gcloud artifacts docker images describe "$${IMAGE_DIGEST}" --show-package-vulnerability --format=json > /workspace/describe.json || true
+
+          status_line="$(python3 - <<'PY'
+        import json
+
+        p = "/workspace/describe.json"
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            print("0 0 0")
+            raise SystemExit(0)
+
+        disc = (data.get("discovery_summary", {}) or {}).get("discovery", []) or []
+        analysis_status = None
+        if disc:
+            analysis_status = (disc[0] or {}).get("discovery", {}).get("analysisStatus")
+
+        ready = 1 if analysis_status == "FINISHED_SUCCESS" else 0
+        vulnerabilities = ((data.get("package_vulnerability_summary", {}) or {}).get("vulnerabilities", {}) or {})
+        critical = len(vulnerabilities.get("CRITICAL", []) or [])
+        high = len(vulnerabilities.get("HIGH", []) or [])
+        print(f"{ready} {critical} {high}")
+        PY
+          )"
+
+          read ready critical high <<< "$${status_line}"
+          echo "Vulnerability scan status (attempt $${i}/30): ready=$${ready} CRITICAL=$${critical} HIGH=$${high}"
+          if [ "$${ready}" = "1" ]; then
+            break
+          fi
+          sleep 10
+        done
+
+        if [ "$${ready}" != "1" ]; then
+          echo "Vulnerability analysis not ready; blocking release"
+          exit 1
+        fi
+
+        if [ "$${critical}" -gt 0 ] || [ "$${high}" -gt 0 ]; then
+          echo "Blocking release due to vulnerabilities"
+          exit 1
+        fi
+
+  # Cloud KMSで署名し、Binary Authorization attestationを作成します。
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - '-ceu'
+      - |
+        IMAGE_DIGEST="$(cat /workspace/image_digest.txt)"
+        echo "Creating Binary Authorization attestation: $${IMAGE_DIGEST}"
+
+        gcloud beta container binauthz attestations sign-and-create \
+          --artifact-url="$${IMAGE_DIGEST}" \
+          --validate \
+          --attestor="projects/$PROJECT_ID/attestors/myp-release-attestor" \
+          --keyversion-project="$PROJECT_ID" \
+          --keyversion-location="${_KMS_LOCATION}" \
+          --keyversion-keyring="${_KMS_KEYRING}" \
+          --keyversion-key="${_KMS_KEY}" \
+          --keyversion="${_KMS_KEY_VERSION}"
+
+  # プレビュー用リビジョンとしてCloud Runへデプロイします。
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - '-ceu'
+      - |
+        IMAGE_DIGEST="$(cat /workspace/image_digest.txt)"
+        gcloud run deploy "${_SERVICE}" \
+          --image="$${IMAGE_DIGEST}" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --binary-authorization=default \
+          --ingress=internal-and-cloud-load-balancing \
+          --no-traffic \
+          --tag=preview \
+          --allow-unauthenticated
 
 images:
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_SERVICE}/${_SERVICE}:$BUILD_ID'

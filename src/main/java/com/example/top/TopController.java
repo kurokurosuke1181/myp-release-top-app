@@ -15,10 +15,11 @@ public class TopController {
                   <head>
                     <meta charset=\"utf-8\" />
                     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-                    <title>Top</title>
+                    <title>Top Sample</title>
                   </head>
                   <body>
-                    <h1>Top</h1>
+                    <h1>Top Sample</h1>
+                    <p>トップ画面のサンプルです。</p>
                     <p><a href=\"/a\">導線Aへ</a></p>
                   </body>
                 </html>
